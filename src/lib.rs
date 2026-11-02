@@ -225,6 +225,29 @@ struct Addresses {
     u_world_get_world_info: usize,
 }
 
+// Optional experiment config: hook_variant.txt next to the exe, lines:
+//   net_mode=1
+//   spawn_server_actors=0
+fn read_variant() -> (Option<u8>, bool) {
+    let mut mode = None;
+    let mut spawn = true;
+    if let Ok(p) = std::env::current_exe() {
+        if let Some(d) = p.parent() {
+            if let Ok(s) = std::fs::read_to_string(d.join("hook_variant.txt")) {
+                for line in s.lines() {
+                    let line = line.trim();
+                    if let Some(v) = line.strip_prefix("net_mode=") {
+                        mode = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("spawn_server_actors=") {
+                        spawn = v.trim() != "0";
+                    }
+                }
+            }
+        }
+    }
+    (mode, spawn)
+}
+
 unsafe fn patch() -> Result<()> {
     #[cfg(feature = "manifest-4932913164832566208")]
     let addresses = Addresses {
@@ -313,7 +336,13 @@ unsafe fn patch() -> Result<()> {
                     );
                 add_item(object_notifies, &(notify as *const _));
 
-                (element_ptr!(vtable => .spawn_server_actors.*))(gengine);
+                let (cfg_mode, cfg_spawn) = read_variant();
+                info!("variant: net_mode={cfg_mode:?} spawn_server_actors={cfg_spawn}");
+                if cfg_spawn {
+                    (element_ptr!(vtable => .spawn_server_actors.*))(gengine);
+                } else {
+                    info!("skipping spawn_server_actors");
+                }
 
                 let get_world_info = std::mem::transmute::<usize, FnUWorldGetWorldInfo>(
                     base_address + addresses.u_world_get_world_info,
@@ -323,11 +352,12 @@ unsafe fn patch() -> Result<()> {
                     "world_info = {world_info:?} net_mode = {}",
                     element_ptr!(world_info => .net_mode.*)
                 );
-                let net_mode = if element_ptr!(gengine => .client.*).is_null() {
+                let default_mode: u8 = if element_ptr!(gengine => .client.*).is_null() {
                     1
                 } else {
                     2
                 };
+                let net_mode: u8 = cfg_mode.unwrap_or(default_mode);
                 *element_ptr!(world_info => .net_mode) = net_mode;
                 //*element_ptr!(world_info => .next_switch_countdown) =
                 //    *element_ptr!(net_driver => .server_travel_pause);
