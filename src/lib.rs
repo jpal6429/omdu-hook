@@ -382,7 +382,7 @@ unsafe fn patch() -> Result<()> {
                         std::thread::sleep(std::time::Duration::from_millis(ms));
                         unsafe {
                             let wi = wi_addr as *mut AWorldInfo;
-                            let cur = *element_ptr!(wi => .net_mode.*);
+                            let cur = element_ptr!(wi => .net_mode.*);
                             info!("reset timer fired, net_mode currently {cur}");
                             if cur == net_mode {
                                 *element_ptr!(wi => .net_mode) = 0;
