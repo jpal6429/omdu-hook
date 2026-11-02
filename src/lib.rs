@@ -248,6 +248,18 @@ fn read_variant() -> (Option<u8>, bool) {
     (mode, spawn)
 }
 
+// hook_variant.txt line: net_mode_reset_ms=20000
+fn read_reset_ms() -> Option<u64> {
+    let p = std::env::current_exe().ok()?;
+    let s = std::fs::read_to_string(p.parent()?.join("hook_variant.txt")).ok()?;
+    for line in s.lines() {
+        if let Some(v) = line.trim().strip_prefix("net_mode_reset_ms=") {
+            return v.trim().parse().ok();
+        }
+    }
+    None
+}
+
 unsafe fn patch() -> Result<()> {
     #[cfg(feature = "manifest-4932913164832566208")]
     let addresses = Addresses {
@@ -362,6 +374,23 @@ unsafe fn patch() -> Result<()> {
                 //*element_ptr!(world_info => .next_switch_countdown) =
                 //    *element_ptr!(net_driver => .server_travel_pause);
                 info!("net_mode is now {net_mode}");
+
+                if let Some(ms) = read_reset_ms() {
+                    let wi_addr = world_info as usize;
+                    info!("will reset net_mode to 0 after {ms} ms (world_info {wi_addr:x})");
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                        unsafe {
+                            let wi = wi_addr as *mut AWorldInfo;
+                            let cur = *element_ptr!(wi => .net_mode.*);
+                            info!("reset timer fired, net_mode currently {cur}");
+                            if cur == net_mode {
+                                *element_ptr!(wi => .net_mode) = 0;
+                                info!("net_mode reset to 0");
+                            }
+                        }
+                    });
+                }
             } else {
                 info!("failed to construct net driver");
             }
