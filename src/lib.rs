@@ -44,6 +44,7 @@ unsafe extern "system" fn init(_: usize) {
             error!("{e:#}");
         } else {
             info!("patches and hooks complete");
+            start_command_channel();
         }
     }
 }
@@ -258,6 +259,53 @@ fn read_reset_ms() -> Option<u64> {
         }
     }
     None
+}
+
+// ---- command channel -------------------------------------------------------------------------
+// The stub (or you) writes console commands, one per line, to `omdu_cmds.txt` next to the exe.
+// This thread picks the file up, deletes it, and runs each line through UObject::StaticExec (the
+// same function the in-game console uses: SET / GET / ...). Output lands in the game's own log.
+// RVAs below are for build manifest 4932913164832566208.
+type FnStaticExec = unsafe extern "system" fn(cmd: *const u16, ar: *mut ()) -> u32;
+const STATIC_EXEC_RVA: usize = 0xf1bb0;
+const GLOG_PTR_RVA: usize = 0x243f018; // global holding the FOutputDevice* the engine passes itself
+
+fn start_command_channel() {
+    #[cfg(feature = "manifest-4932913164832566208")]
+    {
+        let dir = match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            Some(d) => d,
+            None => return,
+        };
+        let base = unsafe { GetModuleHandleW(None).unwrap().0 as usize };
+        std::thread::spawn(move || {
+            let path = dir.join("omdu_cmds.txt");
+            info!("command channel watching {}", path.display());
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                let _ = std::fs::remove_file(&path);
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(ms) = line.strip_prefix("sleep ") {
+                        std::thread::sleep(std::time::Duration::from_millis(ms.trim().parse().unwrap_or(0)));
+                        continue;
+                    }
+                    unsafe {
+                        let exec: FnStaticExec = std::mem::transmute(base + STATIC_EXEC_RVA);
+                        let glog = *((base + GLOG_PTR_RVA) as *const *mut ());
+                        let wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
+                        info!("exec: {line}");
+                        let r = exec(wide.as_ptr(), glog);
+                        info!("exec returned {r}");
+                    }
+                }
+            }
+        });
+    }
 }
 
 unsafe fn patch() -> Result<()> {
